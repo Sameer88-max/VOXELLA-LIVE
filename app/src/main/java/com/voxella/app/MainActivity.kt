@@ -23,6 +23,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalContext
+import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.delay
 
 private val Dark = Color(0xFF090D1B)
@@ -35,8 +37,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        window.statusBarColor = android.graphics.Color.rgb(9,13,27)
-        window.navigationBarColor = android.graphics.Color.rgb(9,13,27)
+        window.statusBarColor = android.graphics.Color.rgb(9, 13, 27)
+        window.navigationBarColor = android.graphics.Color.rgb(9, 13, 27)
 
         setContent {
             VoxellaApp()
@@ -46,12 +48,25 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun VoxellaApp() {
+    val auth = remember { FirebaseAuth.getInstance() }
+
     var page by remember { mutableStateOf("Splash") }
-    var loggedIn by remember { mutableStateOf(false) }
+    var currentUser by remember { mutableStateOf(auth.currentUser) }
+
+    DisposableEffect(auth) {
+        val listener = FirebaseAuth.AuthStateListener {
+            currentUser = it.currentUser
+        }
+        auth.addAuthStateListener(listener)
+
+        onDispose {
+            auth.removeAuthStateListener(listener)
+        }
+    }
 
     LaunchedEffect(Unit) {
-        delay(1800)
-        page = if (loggedIn) "Home" else "Login"
+        delay(1500)
+        page = if (auth.currentUser != null) "Home" else "Login"
     }
 
     MaterialTheme(
@@ -69,8 +84,8 @@ fun VoxellaApp() {
                 "Splash" -> SplashScreen()
 
                 "Login" -> LoginScreen(
-                    onLogin = {
-                        loggedIn = true
+                    auth = auth,
+                    onLoginSuccess = {
                         page = "Home"
                     }
                 )
@@ -79,7 +94,7 @@ fun VoxellaApp() {
                     currentPage = page,
                     navigate = { page = it },
                     onLogout = {
-                        loggedIn = false
+                        auth.signOut()
                         page = "Login"
                     }
                 )
@@ -118,7 +133,6 @@ fun SplashScreen() {
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             VoxellaLogo(115.dp)
-
             Spacer(Modifier.height(20.dp))
 
             Text(
@@ -143,28 +157,38 @@ fun SplashScreen() {
 }
 
 @Composable
-fun LoginScreen(onLogin: () -> Unit) {
+fun LoginScreen(
+    auth: FirebaseAuth,
+    onLoginSuccess: () -> Unit
+) {
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var error by remember { mutableStateOf("") }
+    var isSignUp by remember { mutableStateOf(false) }
+    var loading by remember { mutableStateOf(false) }
+    var forgotPasswordMode by remember { mutableStateOf(false) }
+
+    val context = LocalContext.current
 
     Box(
-        Modifier.fillMaxSize().verticalScroll(
-            androidx.compose.foundation.rememberScrollState()
-        ).padding(24.dp),
+        Modifier.fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(24.dp),
         contentAlignment = Alignment.Center
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-
             VoxellaLogo(105.dp)
 
             Spacer(Modifier.height(18.dp))
 
             Text(
-                "WELCOME TO VOXELLA",
+                if (forgotPasswordMode) "RESET PASSWORD"
+                else if (isSignUp) "CREATE VOXELLA ACCOUNT"
+                else "WELCOME TO VOXELLA",
                 color = White,
-                fontSize = 25.sp,
-                fontWeight = FontWeight.ExtraBold
+                fontSize = 23.sp,
+                fontWeight = FontWeight.ExtraBold,
+                textAlign = TextAlign.Center
             )
 
             Text(
@@ -173,7 +197,7 @@ fun LoginScreen(onLogin: () -> Unit) {
                 fontSize = 12.sp
             )
 
-            Spacer(Modifier.height(35.dp))
+            Spacer(Modifier.height(30.dp))
 
             OutlinedTextField(
                 value = email,
@@ -189,36 +213,89 @@ fun LoginScreen(onLogin: () -> Unit) {
                 modifier = Modifier.fillMaxWidth()
             )
 
-            Spacer(Modifier.height(14.dp))
+            if (!forgotPasswordMode) {
+                Spacer(Modifier.height(14.dp))
 
-            OutlinedTextField(
-                value = password,
-                onValueChange = {
-                    password = it
-                    error = ""
-                },
-                label = { Text("Password") },
-                singleLine = true,
-                visualTransformation = PasswordVisualTransformation(),
-                modifier = Modifier.fillMaxWidth()
-            )
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = {
+                        password = it
+                        error = ""
+                    },
+                    label = { Text("Password") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
 
             Spacer(Modifier.height(12.dp))
 
             if (error.isNotEmpty()) {
-                Text(error, color = Color.Red, fontSize = 12.sp)
+                Text(
+                    error,
+                    color = Color(0xFFFF6B6B),
+                    fontSize = 12.sp,
+                    textAlign = TextAlign.Center
+                )
             }
 
             Spacer(Modifier.height(18.dp))
 
             Button(
+                enabled = !loading,
                 onClick = {
+                    error = ""
+
                     if (!email.contains("@") || !email.contains(".")) {
                         error = "Enter a valid email address"
-                    } else if (password.length < 6) {
-                        error = "Password must have at least 6 characters"
+                        return@Button
+                    }
+
+                    if (forgotPasswordMode) {
+                        loading = true
+
+                        auth.sendPasswordResetEmail(email.trim())
+                            .addOnCompleteListener { task ->
+                                loading = false
+                                error = if (task.isSuccessful) {
+                                    forgotPasswordMode = false
+                                    "Password reset email sent. Check your inbox."
+                                } else {
+                                    task.exception?.localizedMessage
+                                        ?: "Could not send reset email"
+                                }
+                            }
                     } else {
-                        onLogin()
+                        if (password.length < 6) {
+                            error = "Password must have at least 6 characters"
+                            return@Button
+                        }
+
+                        loading = true
+
+                        val task = if (isSignUp) {
+                            auth.createUserWithEmailAndPassword(
+                                email.trim(),
+                                password
+                            )
+                        } else {
+                            auth.signInWithEmailAndPassword(
+                                email.trim(),
+                                password
+                            )
+                        }
+
+                        task.addOnCompleteListener { result ->
+                            loading = false
+
+                            if (result.isSuccessful) {
+                                onLoginSuccess()
+                            } else {
+                                error = result.exception?.localizedMessage
+                                    ?: "Authentication failed. Please try again."
+                            }
+                        }
                     }
                 },
                 modifier = Modifier.fillMaxWidth().height(55.dp),
@@ -227,14 +304,64 @@ fun LoginScreen(onLogin: () -> Unit) {
                 ),
                 shape = RoundedCornerShape(14.dp)
             ) {
+                if (loading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(22.dp),
+                        color = Dark,
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    Text(
+                        when {
+                            forgotPasswordMode -> "SEND RESET EMAIL"
+                            isSignUp -> "CREATE ACCOUNT"
+                            else -> "LOGIN & CONTINUE"
+                        },
+                        color = Dark,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(15.dp))
+
+            if (!forgotPasswordMode && !isSignUp) {
+                TextButton(
+                    onClick = {
+                        forgotPasswordMode = true
+                        error = ""
+                    }
+                ) {
+                    Text("Forgot Password?", color = Blue)
+                }
+            }
+
+            TextButton(
+                onClick = {
+                    error = ""
+                    forgotPasswordMode = false
+                    isSignUp = !isSignUp
+                }
+            ) {
                 Text(
-                    "LOGIN & CONTINUE",
-                    color = Dark,
-                    fontWeight = FontWeight.Bold
+                    if (isSignUp) "Already have an account? Login"
+                    else "New to VOXELLA? Create Account",
+                    color = Blue
                 )
             }
 
-            Spacer(Modifier.height(20.dp))
+            if (forgotPasswordMode) {
+                TextButton(
+                    onClick = {
+                        forgotPasswordMode = false
+                        error = ""
+                    }
+                ) {
+                    Text("Back to Login", color = Blue)
+                }
+            }
+
+            Spacer(Modifier.height(15.dp))
 
             Text(
                 "VOXELLA",
@@ -260,14 +387,12 @@ fun MainScreen(
 ) {
     Scaffold(
         containerColor = Dark,
-
         topBar = {
             Row(
                 Modifier.fillMaxWidth().padding(15.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 VoxellaLogo(40.dp)
-
                 Spacer(Modifier.width(10.dp))
 
                 Text(
@@ -279,46 +404,28 @@ fun MainScreen(
 
                 Spacer(Modifier.weight(1f))
 
-                TextButton(
-                    onClick = { navigate("Notifications") }
-                ) {
+                TextButton(onClick = { navigate("Notifications") }) {
                     Text("🔔", fontSize = 21.sp)
                 }
             }
         },
-
         bottomBar = {
             NavigationBar(containerColor = Panel) {
-
-                val tabs = listOf(
-                    "Home",
-                    "Videos",
-                    "Live",
-                    "Messages",
-                    "Profile"
-                )
-
+                val tabs = listOf("Home", "Videos", "Live", "Messages", "Profile")
                 val symbols = listOf("⌂", "▶", "●", "✉", "♙")
 
                 tabs.forEachIndexed { index, tab ->
                     NavigationBarItem(
                         selected = currentPage == tab,
                         onClick = { navigate(tab) },
-                        icon = {
-                            Text(symbols[index], fontSize = 20.sp)
-                        },
-                        label = {
-                            Text(tab, fontSize = 9.sp)
-                        }
+                        icon = { Text(symbols[index], fontSize = 20.sp) },
+                        label = { Text(tab, fontSize = 9.sp) }
                     )
                 }
             }
         }
     ) { padding ->
-
-        Box(
-            Modifier.fillMaxSize().padding(padding)
-        ) {
+        Box(Modifier.fillMaxSize().padding(padding)) {
             when (currentPage) {
                 "Home" -> HomePage(navigate)
                 "Videos" -> VideoPage()
@@ -338,9 +445,7 @@ fun MainScreen(
 
 @Composable
 fun HomePage(navigate: (String) -> Unit) {
-    LazyColumn(
-        Modifier.fillMaxSize().padding(16.dp)
-    ) {
+    LazyColumn(Modifier.fillMaxSize().padding(16.dp)) {
         item {
             Text(
                 "Discover Your World",
@@ -348,57 +453,32 @@ fun HomePage(navigate: (String) -> Unit) {
                 fontSize = 25.sp,
                 fontWeight = FontWeight.Bold
             )
-
-            Text(
-                "Welcome to your VOXELLA community",
-                color = Color.LightGray
-            )
-
+            Text("Welcome to your VOXELLA community", color = Color.LightGray)
             Spacer(Modifier.height(22.dp))
 
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                FeatureCard(
-                    "Watch Videos",
-                    "Explore creators",
-                    "▶",
-                    Modifier.weight(1f)
-                ) { navigate("Videos") }
-
-                FeatureCard(
-                    "Go Live",
-                    "Video & Audio",
-                    "●",
-                    Modifier.weight(1f)
-                ) { navigate("Live") }
+                FeatureCard("Watch Videos", "Explore creators", "▶",
+                    Modifier.weight(1f)) { navigate("Videos") }
+                FeatureCard("Go Live", "Video & Audio", "●",
+                    Modifier.weight(1f)) { navigate("Live") }
             }
 
             Spacer(Modifier.height(12.dp))
 
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                FeatureCard(
-                    "Messages",
-                    "Chat with people",
-                    "✉",
-                    Modifier.weight(1f)
-                ) { navigate("Messages") }
-
-                FeatureCard(
-                    "My Wallet",
-                    "Coins & rewards",
-                    "◆",
-                    Modifier.weight(1f)
-                ) { navigate("Wallet") }
+                FeatureCard("Messages", "Chat with people", "✉",
+                    Modifier.weight(1f)) { navigate("Messages") }
+                FeatureCard("My Wallet", "Coins & rewards", "◆",
+                    Modifier.weight(1f)) { navigate("Wallet") }
             }
 
             Spacer(Modifier.height(25.dp))
-
             Text(
                 "Trending on VOXELLA",
                 color = White,
                 fontSize = 21.sp,
                 fontWeight = FontWeight.Bold
             )
-
             Spacer(Modifier.height(12.dp))
         }
 
@@ -417,9 +497,7 @@ fun FeatureCard(
     onClick: () -> Unit
 ) {
     Card(
-        modifier = modifier
-            .height(135.dp)
-            .clickable { onClick() },
+        modifier = modifier.height(135.dp).clickable { onClick() },
         colors = CardDefaults.cardColors(containerColor = Panel),
         shape = RoundedCornerShape(18.dp)
     ) {
@@ -428,21 +506,9 @@ fun FeatureCard(
             verticalArrangement = Arrangement.Center
         ) {
             Text(symbol, color = Blue, fontSize = 27.sp)
-
             Spacer(Modifier.height(8.dp))
-
-            Text(
-                title,
-                color = White,
-                fontWeight = FontWeight.Bold,
-                fontSize = 14.sp
-            )
-
-            Text(
-                subtitle,
-                color = Color.LightGray,
-                fontSize = 10.sp
-            )
+            Text(title, color = White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            Text(subtitle, color = Color.LightGray, fontSize = 10.sp)
         }
     }
 }
@@ -451,35 +517,25 @@ fun FeatureCard(
 fun VideoPage() {
     var liked by remember { mutableStateOf(false) }
 
-    Box(
-        Modifier.fillMaxSize().background(Color(0xFF10172A))
-    ) {
+    Box(Modifier.fillMaxSize().background(Color(0xFF10172A))) {
         Column(
             Modifier.align(Alignment.Center).padding(20.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text("▶", color = Blue, fontSize = 75.sp)
-
             Text(
                 "VOXELLA VIDEO FEED",
                 color = White,
                 fontSize = 23.sp,
                 fontWeight = FontWeight.Bold
             )
-
-            Text(
-                "Discover creators and videos",
-                color = Color.LightGray
-            )
-
+            Text("Discover creators and videos", color = Color.LightGray)
             Spacer(Modifier.height(20.dp))
-
             Text(
                 "Video playback and upload will be connected with the backend.",
                 color = Color.LightGray,
                 textAlign = TextAlign.Center
             )
-
             Button(onClick = { liked = !liked }) {
                 Text(if (liked) "♥ Liked" else "♡ Like")
             }
@@ -501,7 +557,6 @@ fun VideoPreview(name: String) {
                 fontSize = 40.sp,
                 modifier = Modifier.align(Alignment.Center)
             )
-
             Text(
                 name,
                 color = White,
@@ -521,43 +576,26 @@ fun LivePage() {
                 fontSize = 26.sp,
                 fontWeight = FontWeight.Bold
             )
-
-            Text(
-                "Connect with your audience",
-                color = Color.LightGray
-            )
-
+            Text("Connect with your audience", color = Color.LightGray)
             Spacer(Modifier.height(20.dp))
-
             LiveCard("Video Live", "Start video broadcast", "📹")
             LiveCard("Audio Live", "Create audio room", "🎙")
-
             Text(
                 "Live Rooms",
                 color = White,
                 fontSize = 21.sp,
                 fontWeight = FontWeight.Bold
             )
-
             Spacer(Modifier.height(10.dp))
         }
-
         items((1..8).toList()) {
-            LiveCard(
-                "Creator Room $it",
-                "Live room preview",
-                "🔴"
-            )
+            LiveCard("Creator Room $it", "Live room preview", "🔴")
         }
     }
 }
 
 @Composable
-fun LiveCard(
-    title: String,
-    subtitle: String,
-    symbol: String
-) {
+fun LiveCard(title: String, subtitle: String, symbol: String) {
     Card(
         Modifier.fillMaxWidth().padding(bottom = 12.dp),
         colors = CardDefaults.cardColors(containerColor = Panel),
@@ -568,14 +606,11 @@ fun LiveCard(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(symbol, fontSize = 30.sp)
-
             Spacer(Modifier.width(14.dp))
-
             Column(Modifier.weight(1f)) {
                 Text(title, color = White, fontWeight = FontWeight.Bold)
                 Text(subtitle, color = Color.LightGray, fontSize = 12.sp)
             }
-
             Text("OPEN", color = Blue, fontWeight = FontWeight.Bold)
         }
     }
@@ -584,13 +619,7 @@ fun LiveCard(
 @Composable
 fun MessagesPage() {
     Column(Modifier.fillMaxSize().padding(18.dp)) {
-        Text(
-            "Messages",
-            color = White,
-            fontSize = 27.sp,
-            fontWeight = FontWeight.Bold
-        )
-
+        Text("Messages", color = White, fontSize = 27.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(20.dp))
 
         repeat(8) {
@@ -603,16 +632,13 @@ fun MessagesPage() {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text("👤", fontSize = 30.sp)
-
                     Spacer(Modifier.width(15.dp))
-
                     Column {
                         Text(
                             "VOXELLA User ${it + 1}",
                             color = White,
                             fontWeight = FontWeight.Bold
                         )
-
                         Text(
                             "Start a new conversation",
                             color = Color.LightGray,
@@ -628,13 +654,7 @@ fun MessagesPage() {
 @Composable
 fun WalletPage() {
     Column(Modifier.fillMaxSize().padding(20.dp)) {
-        Text(
-            "My Wallet",
-            color = White,
-            fontSize = 27.sp,
-            fontWeight = FontWeight.Bold
-        )
-
+        Text("My Wallet", color = White, fontSize = 27.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(20.dp))
 
         Card(
@@ -643,20 +663,17 @@ fun WalletPage() {
         ) {
             Column(Modifier.fillMaxWidth().padding(25.dp)) {
                 Text("COIN BALANCE", color = Color.LightGray)
-
                 Text(
                     "0",
                     color = Blue,
                     fontSize = 45.sp,
                     fontWeight = FontWeight.ExtraBold
                 )
-
                 Text("Demo balance", color = Color.LightGray)
             }
         }
 
         Spacer(Modifier.height(20.dp))
-
         ProfileOption("Buy Coins")
         ProfileOption("Gift History")
         ProfileOption("Creator Earnings")
@@ -669,14 +686,15 @@ fun ProfilePage(
     navigate: (String) -> Unit,
     onLogout: () -> Unit
 ) {
+    val user = FirebaseAuth.getInstance().currentUser
+
     Column(
-        Modifier.fillMaxSize().verticalScroll(
-            androidx.compose.foundation.rememberScrollState()
-        ).padding(20.dp),
+        Modifier.fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(20.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         VoxellaLogo(90.dp)
-
         Spacer(Modifier.height(15.dp))
 
         Text(
@@ -687,8 +705,14 @@ fun ProfilePage(
         )
 
         Text(
-            "User ID: Assigned by backend",
+            user?.email ?: "Member",
             color = Blue
+        )
+
+        Text(
+            "User ID: ${user?.uid?.take(10) ?: "Pending"}",
+            color = Color.LightGray,
+            fontSize = 11.sp
         )
 
         Spacer(Modifier.height(25.dp))
@@ -700,15 +724,12 @@ fun ProfilePage(
         ClickableOption("Followers & Following") {
             navigate("Followers")
         }
-
         ClickableOption("Business Account") {
             navigate("Business")
         }
-
         ClickableOption("Wallet") {
             navigate("Wallet")
         }
-
         ClickableOption("Settings & Privacy") {
             navigate("Settings")
         }
@@ -740,10 +761,7 @@ fun ProfileOption(title: String) {
 }
 
 @Composable
-fun ClickableOption(
-    title: String,
-    onClick: () -> Unit
-) {
+fun ClickableOption(title: String, onClick: () -> Unit) {
     Card(
         Modifier.fillMaxWidth()
             .padding(vertical = 5.dp)
@@ -760,10 +778,7 @@ fun ClickableOption(
 
 @Composable
 fun SimplePage(title: String) {
-    Box(
-        Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
-    ) {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Text(
             title,
             color = White,
