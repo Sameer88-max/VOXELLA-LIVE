@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "649918984465",
+    "project_id": "voxella-7e6a5",
+    "storage_bucket": "voxella-7e6a5.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:649918984465:android:50599a678e01b656641cb0",
+        "android_client_info": {
+          "package_name": "com.voxella.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBCMvKm17cT6lEeoMerfEZi4Td2Mffg5_k"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
